@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, make_response, current_app
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
@@ -15,6 +15,7 @@ from app.utils.validators import validate_email, validate_password, error_respon
 from sqlalchemy.exc import SQLAlchemyError
 from app.schemas import UserSchema, ChangePasswordSchema
 import uuid
+from marshmallow import ValidationError
 
 bp = Blueprint("auth", __name__, url_prefix="/api")
 

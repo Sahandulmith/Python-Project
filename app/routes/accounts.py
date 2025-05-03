@@ -22,7 +22,7 @@ MAX_ACCOUNTS = 2
 def get_accounts():
     try:
         user_id = get_jwt_identity()
-        accounts = Account.query.filter_by(user_id=user_id).all()
+        accounts = Account.query.filter_by(user_id=user_id, is_active=True).all()
         return jsonify([account.to_dict() for account in accounts]), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -42,7 +42,8 @@ def create_account():
         account = Account(
             account_number=str(uuid.uuid4())[:20],
             user_id=user_id,
-            account_type=data['account_type']
+            account_type=data['account_type'],
+            balance=0.0
         )
         
         db.session.add(account)
@@ -59,7 +60,7 @@ def create_account():
 def get_account(account_id):
     try:
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=account_id, user_id=user_id).first_or_404()
+        account = Account.query.filter_by(id=account_id, user_id=user_id, is_active=True).first_or_404()
         return jsonify(account.to_dict()), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -73,7 +74,7 @@ def update_account(account_id):
             return jsonify({'error': 'No input data provided'}), 400
 
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=account_id, user_id=user_id).first_or_404()
+        account = Account.query.filter_by(id=account_id, user_id=user_id, is_active=True).first_or_404()
         
         if 'account_type' in data:
             account.account_type = data['account_type']
@@ -90,12 +91,12 @@ def update_account(account_id):
 def delete_account(account_id):
     try:
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=account_id, user_id=user_id).first_or_404()
+        account = Account.query.filter_by(id=account_id, user_id=user_id, is_active=True).first_or_404()
         
         if account.balance > 0:
             return jsonify({'error': 'Cannot delete account with balance'}), 400
             
-        db.session.delete(account)
+        account.is_active = False
         db.session.commit()
         return jsonify({'message': 'Account deleted successfully'}), 200
     except Exception as e:
@@ -106,8 +107,8 @@ def delete_account(account_id):
 def get_account_transactions(account_id):
     try:
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=account_id, user_id=user_id).first_or_404()
-        transactions = Transaction.query.filter_by(account_id=account_id).all()
+        account = Account.query.filter_by(id=account_id, user_id=user_id, is_active=True).first_or_404()
+        transactions = Transaction.query.filter_by(account_id=account_id).order_by(Transaction.created_at.desc()).all()
         return jsonify([transaction.to_dict() for transaction in transactions]), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -117,9 +118,9 @@ def get_account_transactions(account_id):
 def get_transactions():
     try:
         user_id = get_jwt_identity()
-        accounts = Account.query.filter_by(user_id=user_id).all()
+        accounts = Account.query.filter_by(user_id=user_id, is_active=True).all()
         account_ids = [account.id for account in accounts]
-        transactions = Transaction.query.filter(Transaction.account_id.in_(account_ids)).all()
+        transactions = Transaction.query.filter(Transaction.account_id.in_(account_ids)).order_by(Transaction.created_at.desc()).all()
         return jsonify([transaction.to_dict() for transaction in transactions]), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -129,8 +130,8 @@ def get_transactions():
 def get_account_transactions_list(account_id):
     try:
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=account_id, user_id=user_id).first_or_404()
-        transactions = Transaction.query.filter_by(account_id=account_id).all()
+        account = Account.query.filter_by(id=account_id, user_id=user_id, is_active=True).first_or_404()
+        transactions = Transaction.query.filter_by(account_id=account_id).order_by(Transaction.created_at.desc()).all()
         return jsonify([transaction.to_dict() for transaction in transactions]), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -147,7 +148,7 @@ def create_transaction(account_id):
         schema.load(data)
 
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=account_id, user_id=user_id).first_or_404()
+        account = Account.query.filter_by(id=account_id, user_id=user_id, is_active=True).first_or_404()
         
         transaction = Transaction(
             account_id=account_id,
@@ -175,7 +176,7 @@ def deposit():
             return jsonify({'error': 'No input data provided'}), 400
 
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=data['account_id'], user_id=user_id).first_or_404()
+        account = Account.query.filter_by(id=data['account_id'], user_id=user_id, is_active=True).first_or_404()
         
         transaction = Transaction(
             account_id=account.id,
@@ -205,7 +206,7 @@ def withdraw():
             return jsonify({'error': 'No input data provided'}), 400
 
         user_id = get_jwt_identity()
-        account = Account.query.filter_by(id=data['account_id'], user_id=user_id).first_or_404()
+        account = Account.query.filter_by(id=data['account_id'], user_id=user_id, is_active=True).first_or_404()
         
         if account.balance < data['amount']:
             return jsonify({'error': 'Insufficient funds'}), 400
@@ -238,8 +239,8 @@ def transfer():
             return jsonify({'error': 'No input data provided'}), 400
 
         user_id = get_jwt_identity()
-        from_account = Account.query.filter_by(id=data['from_account_id'], user_id=user_id).first_or_404()
-        to_account = Account.query.filter_by(id=data['to_account_id']).first_or_404()
+        from_account = Account.query.filter_by(id=data['from_account_id'], user_id=user_id, is_active=True).first_or_404()
+        to_account = Account.query.filter_by(id=data['to_account_id'], is_active=True).first_or_404()
         
         if from_account.balance < data['amount']:
             return jsonify({'error': 'Insufficient funds'}), 400
@@ -290,8 +291,8 @@ def transfer_advanced():
             return jsonify({'error': 'No input data provided'}), 400
 
         user_id = get_jwt_identity()
-        from_account = Account.query.filter_by(id=data['from_account_id'], user_id=user_id).first_or_404()
-        to_account = Account.query.filter_by(id=data['to_account_id']).first_or_404()
+        from_account = Account.query.filter_by(id=data['from_account_id'], user_id=user_id, is_active=True).first_or_404()
+        to_account = Account.query.filter_by(id=data['to_account_id'], is_active=True).first_or_404()
         
         if from_account.balance < data['amount']:
             return jsonify({'error': 'Insufficient funds'}), 400
