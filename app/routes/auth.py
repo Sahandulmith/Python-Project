@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, make_response
+from flask import Blueprint, request, jsonify, make_response, current_app
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
@@ -11,10 +11,11 @@ import re
 from app import db, jwt
 from app.models.user import User
 from app.utils.validators import validate_email, validate_password, error_response
+from sqlalchemy.exc import SQLAlchemyError
 
 bp = Blueprint("auth", __name__, url_prefix="/api")
 
-# Blocklist for revoked tokens
+# Blocklist for revoked tokens - should be moved to a persistent storage in production
 token_blocklist = set()
 
 
@@ -28,102 +29,118 @@ def check_if_token_revoked(jwt_header, jwt_payload):
 @bp.route("/register", methods=["POST"])
 @bp.route("/auth/register", methods=["POST"])
 def register():
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    # Validate required fields
-    if not all(k in data for k in ("email", "password")):
-        return error_response("Missing required fields")
+        # Validate required fields
+        if not all(k in data for k in ("email", "password")):
+            return error_response("Missing required fields")
 
-    # Parse firstname/lastname or username
-    username = data.get("username")
-    first_name = data.get("first_name")
-    last_name = data.get("last_name")
+        # Sanitize and validate email
+        email = data["email"].strip().lower()
+        if not validate_email(email):
+            return error_response("Invalid email format")
 
-    if not username and not (first_name and last_name):
-        # Allow email as username for simple test cases
-        username = data.get("email").split("@")[0]
+        # Parse and sanitize username/firstname/lastname
+        username = data.get("username", "").strip()
+        first_name = data.get("first_name", "").strip()
+        last_name = data.get("last_name", "").strip()
 
-    # If username not provided but first_name/last_name are, create a username
-    if not username and first_name and last_name:
-        username = f"{first_name.lower()}_{last_name.lower()}"
+        if not username and not (first_name and last_name):
+            # Allow email as username for simple test cases
+            username = email.split("@")[0]
 
-    # Validate email format
-    if not validate_email(data["email"]):
-        return error_response("Invalid email format")
+        # If username not provided but first_name/last_name are, create a username
+        if not username and first_name and last_name:
+            username = f"{first_name.lower()}_{last_name.lower()}"
 
-    # Enhanced password validation for complex passwords
-    password = data["password"]
-    if not validate_password_complexity(password):
-        return error_response(
-            "Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters",
-            400,
-        )
+        # Validate password complexity
+        password = data["password"]
+        if not validate_password(password):
+            return error_response(
+                "Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters",
+                400,
+            )
 
-    # Check if user already exists
-    if User.query.filter_by(username=username).first():
-        return error_response("Username already exists")
+        # Check if user already exists
+        if User.query.filter_by(username=username).first():
+            return error_response("Username already exists")
 
-    if User.query.filter_by(email=data["email"]).first():
-        return error_response("Email already exists")
+        if User.query.filter_by(email=email).first():
+            return error_response("Email already exists")
 
-    # Create new user
-    new_user = User(username=username, email=data["email"], password=password)
+        # Create new user
+        new_user = User(username=username, email=email, password=password)
 
-    # Add first_name and last_name if provided
-    if first_name:
-        new_user.first_name = first_name
-    if last_name:
-        new_user.last_name = last_name
+        # Add first_name and last_name if provided
+        if first_name:
+            new_user.first_name = first_name
+        if last_name:
+            new_user.last_name = last_name
 
-    db.session.add(new_user)
-    db.session.commit()
+        db.session.add(new_user)
+        db.session.commit()
 
-    # Return user data (excluding password)
-    return jsonify(
-        {"message": "User registered successfully", "user": new_user.to_dict()}
-    ), 201
+        # Return user data (excluding password)
+        return jsonify(
+            {"message": "User registered successfully", "user": new_user.to_dict()}
+        ), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        current_app.logger.error(f"Database error during registration: {str(e)}")
+        return error_response("An error occurred during registration", 500)
+    except Exception as e:
+        current_app.logger.error(f"Unexpected error during registration: {str(e)}")
+        return error_response("An unexpected error occurred", 500)
 
 
 # Login endpoint with both URL path support
 @bp.route("/login", methods=["POST"])
 @bp.route("/auth/login", methods=["POST"])
 def login():
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    # Check if using email or username
-    if "email" in data and "password" in data:
-        # Find user by email
-        user = User.query.filter_by(email=data["email"]).first()
-    elif "username" in data and "password" in data:
-        # Find user by username
-        user = User.query.filter_by(username=data["username"]).first()
-    else:
-        return error_response("Email/username and password are required")
+        # Check if using email or username
+        if "email" in data and "password" in data:
+            # Find user by email
+            user = User.query.filter_by(email=data["email"].strip().lower()).first()
+        elif "username" in data and "password" in data:
+            # Find user by username
+            user = User.query.filter_by(username=data["username"].strip()).first()
+        else:
+            return error_response("Email/username and password are required")
 
-    # Verify user exists and password is correct
-    if not user or not user.check_password(data["password"]):
-        return error_response("Invalid credentials", 401)
-    
-    # Include role in JWT claims
-    additional_claims = {'role': user.role, 'password': data['password']}
+        # Verify user exists and password is correct
+        if not user or not user.check_password(data["password"]):
+            return error_response("Invalid credentials", 401)
+        
+        # Include only necessary claims in JWT
+        additional_claims = {'role': user.role}
 
-    # Create access token and refresh token
-    access_token = create_access_token(identity=user.id, additional_claims=additional_claims)
-    refresh_token = create_refresh_token(identity=user.id, additional_claims=additional_claims)
+        # Create access token and refresh token
+        access_token = create_access_token(identity=user.id, additional_claims=additional_claims)
+        refresh_token = create_refresh_token(identity=user.id, additional_claims=additional_claims)
 
-    response_data = {"message": "Login successful", "user": user.to_dict()}
+        response_data = {
+            "message": "Login successful", 
+            "user": user.to_dict(),
+            "access_token": access_token,
+            "refresh_token": refresh_token
+        }
 
-    # Return token as 'token' for advanced tests or 'access_token' for basic tests
-    response_data["token"] = access_token
-    response_data["access_token"] = access_token
-    response_data["refresh_token"] = refresh_token
-
-    return jsonify(response_data)
+        return jsonify(response_data)
+    except SQLAlchemyError as e:
+        current_app.logger.error(f"Database error during login: {str(e)}")
+        return error_response("An error occurred during login", 500)
+    except Exception as e:
+        current_app.logger.error(f"Unexpected error during login: {str(e)}")
+        return error_response("An unexpected error occurred", 500)
 
 
 # Get access token using refresh token
 @bp.route("/auth/refresh", methods=["POST"])
-@jwt_required()
+@jwt_required(refresh=True)
 def refresh():
     """Endpoint to refresh token using refresh token in request header"""
     try:
@@ -131,15 +148,18 @@ def refresh():
         if not current_user_id:
             return error_response("Invalid token identity", 401)
 
-        new_access_token = create_access_token(identity=current_user_id)
-
-        return jsonify(
-            {
-                "token": new_access_token,
-                "access_token": new_access_token,
-            }
+        # Get the current claims
+        current_claims = get_jwt()
+        
+        # Create new access token with the same claims
+        new_access_token = create_access_token(
+            identity=current_user_id,
+            additional_claims={'role': current_claims.get('role', 'user')}
         )
+
+        return jsonify({"access_token": new_access_token})
     except Exception as e:
+        current_app.logger.error(f"Error during token refresh: {str(e)}")
         return error_response(f"Invalid token: {str(e)}", 401)
 
 
@@ -147,26 +167,37 @@ def refresh():
 @jwt_required()
 def logout():
     """Endpoint to log out user by revoking their JWT token"""
-    jti = get_jwt()["jti"]
-    token_blocklist.add(jti)
-
-    return jsonify({"message": "Successfully logged out"})
+    try:
+        jti = get_jwt()["jti"]
+        token_blocklist.add(jti)
+        return jsonify({"message": "Successfully logged out"})
+    except Exception as e:
+        current_app.logger.error(f"Error during logout: {str(e)}")
+        return error_response("An error occurred during logout", 500)
 
 
 @bp.route("/auth/profile", methods=["GET"])
 @jwt_required()
 def get_profile():
     """Get authenticated user's profile"""
-    current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    try:
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
 
-    if not user:
-        return error_response("User not found", 404)
+        if not user:
+            return error_response("User not found", 404)
 
-    return jsonify(user.to_dict())
+        return jsonify(user.to_dict())
+    except SQLAlchemyError as e:
+        current_app.logger.error(f"Database error fetching profile: {str(e)}")
+        return error_response("An error occurred while fetching profile", 500)
+    except Exception as e:
+        current_app.logger.error(f"Unexpected error fetching profile: {str(e)}")
+        return error_response("An unexpected error occurred", 500)
 
 
 @bp.route("/auth/verify", methods=["POST"])
+@jwt_required()
 def verify_token():
     """Verify if a token is valid and not expired"""
     return jsonify({"message": "Token is valid", "verified": True})
@@ -176,31 +207,39 @@ def verify_token():
 @jwt_required(fresh=True)
 def change_password():
     """Endpoint to change a user's password"""
-    current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    try:
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
 
-    if not user:
-        return error_response("User not found", 404)
+        if not user:
+            return error_response("User not found", 404)
 
-    data = request.get_json()
+        data = request.get_json()
 
-    # Validate required fields
-    if not all(k in data for k in ("current_password", "new_password")):
-        return error_response("Current password and new password are required")
+        # Validate required fields
+        if not all(k in data for k in ("current_password", "new_password")):
+            return error_response("Current password and new password are required")
 
-    # Verify current password
-    if not user.check_password(data["current_password"]):
-        return error_response("Current password is incorrect", 401)
+        # Verify current password
+        if not user.check_password(data["current_password"]):
+            return error_response("Current password is incorrect", 401)
 
-    # Validate new password complexity
-    if not validate_password_complexity(data["new_password"]):
-        return error_response("New password must meet complexity requirements", 400)
+        # Validate new password complexity
+        if not validate_password(data["new_password"]):
+            return error_response("New password must meet complexity requirements", 400)
 
-    # Update password
-    user.password_hash = User.generate_password_hash(data["new_password"])
-    db.session.commit()
+        # Update password
+        user.password_hash = User.generate_password_hash(data["new_password"])
+        db.session.commit()
 
-    return jsonify({"message": "Password changed successfully"})
+        return jsonify({"message": "Password changed successfully"})
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        current_app.logger.error(f"Database error changing password: {str(e)}")
+        return error_response("An error occurred while changing password", 500)
+    except Exception as e:
+        current_app.logger.error(f"Unexpected error changing password: {str(e)}")
+        return error_response("An unexpected error occurred", 500)
 
 
 def validate_password_complexity(password):
