@@ -3,7 +3,8 @@ from flask_cors import CORS
 from flasgger import Swagger
 from app.config import Config
 from app.models import db
-from app.routes import auth_bp, api_bp
+from app.routes.auth import auth_bp
+from app.routes.accounts import accounts_bp
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -16,7 +17,7 @@ def create_app(config_class=Config):
     
     # Register blueprints
     app.register_blueprint(auth_bp, url_prefix='/auth')
-    app.register_blueprint(api_bp, url_prefix='/api')
+    app.register_blueprint(accounts_bp, url_prefix='/api')
     
     # Create database tables
     with app.app_context():

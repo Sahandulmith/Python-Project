@@ -5,6 +5,7 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity,
     get_jwt,
+    verify_jwt_in_request
 )
 from datetime import datetime, timedelta, timezone
 import re
@@ -12,6 +13,8 @@ from app import db, jwt
 from app.models.user import User
 from app.utils.validators import validate_email, validate_password, error_response
 from sqlalchemy.exc import SQLAlchemyError
+from app.schemas import UserSchema, ChangePasswordSchema
+import uuid
 
 bp = Blueprint("auth", __name__, url_prefix="/api")
 
@@ -31,67 +34,35 @@ def check_if_token_revoked(jwt_header, jwt_payload):
 def register():
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No input data provided'}), 400
 
-        # Validate required fields
-        if not all(k in data for k in ("email", "password")):
-            return error_response("Missing required fields")
+        schema = UserSchema()
+        schema.load(data)
 
-        # Sanitize and validate email
-        email = data["email"].strip().lower()
-        if not validate_email(email):
-            return error_response("Invalid email format")
-
-        # Parse and sanitize username/firstname/lastname
-        username = data.get("username", "").strip()
-        first_name = data.get("first_name", "").strip()
-        last_name = data.get("last_name", "").strip()
-
-        if not username and not (first_name and last_name):
-            # Allow email as username for simple test cases
-            username = email.split("@")[0]
-
-        # If username not provided but first_name/last_name are, create a username
-        if not username and first_name and last_name:
-            username = f"{first_name.lower()}_{last_name.lower()}"
-
-        # Validate password complexity
-        password = data["password"]
-        if not validate_password(password):
-            return error_response(
-                "Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters",
-                400,
-            )
-
-        # Check if user already exists
-        if User.query.filter_by(username=username).first():
-            return error_response("Username already exists")
-
-        if User.query.filter_by(email=email).first():
-            return error_response("Email already exists")
-
-        # Create new user
-        new_user = User(username=username, email=email, password=password)
-
-        # Add first_name and last_name if provided
-        if first_name:
-            new_user.first_name = first_name
-        if last_name:
-            new_user.last_name = last_name
-
-        db.session.add(new_user)
+        if User.query.filter_by(username=data['username']).first():
+            return jsonify({'error': 'Username already exists'}), 409
+        
+        if User.query.filter_by(email=data['email']).first():
+            return jsonify({'error': 'Email already exists'}), 409
+        
+        user = User(
+            username=data['username'],
+            email=data['email']
+        )
+        user.set_password(data['password'])
+        
+        db.session.add(user)
         db.session.commit()
-
-        # Return user data (excluding password)
-        return jsonify(
-            {"message": "User registered successfully", "user": new_user.to_dict()}
-        ), 201
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        current_app.logger.error(f"Database error during registration: {str(e)}")
-        return error_response("An error occurred during registration", 500)
+        
+        return jsonify({
+            'message': 'User created successfully',
+            'user': user.to_dict()
+        }), 201
+    except ValidationError as err:
+        return jsonify({'error': err.messages}), 400
     except Exception as e:
-        current_app.logger.error(f"Unexpected error during registration: {str(e)}")
-        return error_response("An unexpected error occurred", 500)
+        return jsonify({'error': str(e)}), 500
 
 
 # Login endpoint with both URL path support
@@ -100,42 +71,27 @@ def register():
 def login():
     try:
         data = request.get_json()
+        if not data or not data.get('username') or not data.get('password'):
+            return jsonify({'error': 'Username and password are required'}), 400
 
-        # Check if using email or username
-        if "email" in data and "password" in data:
-            # Find user by email
-            user = User.query.filter_by(email=data["email"].strip().lower()).first()
-        elif "username" in data and "password" in data:
-            # Find user by username
-            user = User.query.filter_by(username=data["username"].strip()).first()
-        else:
-            return error_response("Email/username and password are required")
-
-        # Verify user exists and password is correct
-        if not user or not user.check_password(data["password"]):
-            return error_response("Invalid credentials", 401)
+        user = User.query.filter_by(username=data['username']).first()
         
-        # Include only necessary claims in JWT
-        additional_claims = {'role': user.role}
-
-        # Create access token and refresh token
-        access_token = create_access_token(identity=user.id, additional_claims=additional_claims)
-        refresh_token = create_refresh_token(identity=user.id, additional_claims=additional_claims)
-
-        response_data = {
-            "message": "Login successful", 
-            "user": user.to_dict(),
-            "access_token": access_token,
-            "refresh_token": refresh_token
-        }
-
-        return jsonify(response_data)
-    except SQLAlchemyError as e:
-        current_app.logger.error(f"Database error during login: {str(e)}")
-        return error_response("An error occurred during login", 500)
+        if user and user.check_password(data['password']):
+            user.last_login = datetime.utcnow()
+            db.session.commit()
+            
+            access_token = create_access_token(identity=user.id)
+            refresh_token = create_refresh_token(identity=user.id)
+            
+            return jsonify({
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'user': user.to_dict()
+            }), 200
+        
+        return jsonify({'error': 'Invalid credentials'}), 401
     except Exception as e:
-        current_app.logger.error(f"Unexpected error during login: {str(e)}")
-        return error_response("An unexpected error occurred", 500)
+        return jsonify({'error': str(e)}), 500
 
 
 # Get access token using refresh token
@@ -144,23 +100,11 @@ def login():
 def refresh():
     """Endpoint to refresh token using refresh token in request header"""
     try:
-        current_user_id = get_jwt_identity()
-        if not current_user_id:
-            return error_response("Invalid token identity", 401)
-
-        # Get the current claims
-        current_claims = get_jwt()
-        
-        # Create new access token with the same claims
-        new_access_token = create_access_token(
-            identity=current_user_id,
-            additional_claims={'role': current_claims.get('role', 'user')}
-        )
-
-        return jsonify({"access_token": new_access_token})
+        user_id = get_jwt_identity()
+        access_token = create_access_token(identity=user_id)
+        return jsonify({'access_token': access_token}), 200
     except Exception as e:
-        current_app.logger.error(f"Error during token refresh: {str(e)}")
-        return error_response(f"Invalid token: {str(e)}", 401)
+        return jsonify({'error': str(e)}), 500
 
 
 @bp.route("/auth/logout", methods=["POST"])
@@ -181,65 +125,49 @@ def logout():
 def get_profile():
     """Get authenticated user's profile"""
     try:
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-
-        if not user:
-            return error_response("User not found", 404)
-
-        return jsonify(user.to_dict())
-    except SQLAlchemyError as e:
-        current_app.logger.error(f"Database error fetching profile: {str(e)}")
-        return error_response("An error occurred while fetching profile", 500)
+        user_id = get_jwt_identity()
+        user = User.query.get_or_404(user_id)
+        return jsonify(user.to_dict()), 200
     except Exception as e:
-        current_app.logger.error(f"Unexpected error fetching profile: {str(e)}")
-        return error_response("An unexpected error occurred", 500)
+        return jsonify({'error': str(e)}), 500
 
 
 @bp.route("/auth/verify", methods=["POST"])
 @jwt_required()
-def verify_token():
+def verify():
     """Verify if a token is valid and not expired"""
-    return jsonify({"message": "Token is valid", "verified": True})
+    try:
+        return jsonify({'message': 'Token is valid'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @bp.route("/auth/change-password", methods=["POST"])
-@jwt_required(fresh=True)
+@jwt_required()
 def change_password():
     """Endpoint to change a user's password"""
     try:
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-
-        if not user:
-            return error_response("User not found", 404)
-
         data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No input data provided'}), 400
 
-        # Validate required fields
-        if not all(k in data for k in ("current_password", "new_password")):
-            return error_response("Current password and new password are required")
+        schema = ChangePasswordSchema()
+        schema.load(data)
 
-        # Verify current password
-        if not user.check_password(data["current_password"]):
-            return error_response("Current password is incorrect", 401)
-
-        # Validate new password complexity
-        if not validate_password(data["new_password"]):
-            return error_response("New password must meet complexity requirements", 400)
-
-        # Update password
-        user.password_hash = User.generate_password_hash(data["new_password"])
+        user_id = get_jwt_identity()
+        user = User.query.get_or_404(user_id)
+        
+        if not user.check_password(data['current_password']):
+            return jsonify({'error': 'Current password is incorrect'}), 401
+        
+        user.set_password(data['new_password'])
         db.session.commit()
-
-        return jsonify({"message": "Password changed successfully"})
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        current_app.logger.error(f"Database error changing password: {str(e)}")
-        return error_response("An error occurred while changing password", 500)
+        
+        return jsonify({'message': 'Password changed successfully'}), 200
+    except ValidationError as err:
+        return jsonify({'error': err.messages}), 400
     except Exception as e:
-        current_app.logger.error(f"Unexpected error changing password: {str(e)}")
-        return error_response("An unexpected error occurred", 500)
+        return jsonify({'error': str(e)}), 500
 
 
 def validate_password_complexity(password):
@@ -268,3 +196,34 @@ def validate_password_complexity(password):
 
     # Advanced version requires all criteria
     return has_uppercase and has_lowercase and has_digit and has_special
+
+
+# Admin routes
+@bp.route('/users', methods=['GET'])
+@jwt_required()
+def get_users():
+    try:
+        current_user = User.query.get_or_404(get_jwt_identity())
+        if current_user.role != 'admin':
+            return jsonify({'error': 'Unauthorized'}), 403
+            
+        users = User.query.all()
+        return jsonify([user.to_dict() for user in users]), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@bp.route('/user/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def delete_user(user_id):
+    try:
+        current_user = User.query.get_or_404(get_jwt_identity())
+        if current_user.role != 'admin':
+            return jsonify({'error': 'Unauthorized'}), 403
+            
+        user = User.query.get_or_404(user_id)
+        db.session.delete(user)
+        db.session.commit()
+        
+        return jsonify({'message': 'User deleted successfully'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
