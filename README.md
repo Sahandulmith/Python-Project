@@ -2,67 +2,101 @@
   <a href="https://cse40.cse.uom.lk/codejam" target="blank"><img src="https://firebasestorage.googleapis.com/v0/b/profile-image-1c78a.appspot.com/o/codejam%2FCodeJameLogo.webp?alt=media&token=507a7f7b-e735-4952-ad04-d0a8f48a8f55" width="350" alt="CodeJam Logo" /></a>
 </p>
 
-# Banking API - Coding Competition
+# Python Project
 
-A Flask-based REST API for a simple banking application.
+A Flask-based REST API for bug tracking with authentication and team management.
 
-## Setup Instructions (Windows)
+## Features
 
-1. Clone the repository
-2. Ensure you have Python 3.12 or above installed. You can check your Python version with:
-```
-python --version
-```
-3. Create a virtual environment:
-```
+- User authentication (register/login)
+- JWT-based authentication
+- Bug tracking system
+- Team-based bug management
+- Swagger API documentation
+- Comprehensive test suite
+
+## Setup
+
+1. Create a virtual environment:
+```bash
 python -m venv venv
-venv\Scripts\activate
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
-4. Install dependencies:
-```
+
+2. Install dependencies:
+```bash
 pip install -r requirements.txt
 ```
-5. Initialize the database:
+
+3. Create a `.env` file with the following variables:
 ```
-flask init-db
+FLASK_APP=app.py
+FLASK_DEBUG=True
+SECRET_KEY=your-secret-key-here
+JWT_SECRET_KEY=your-jwt-secret-key-here
+DATABASE_URL=sqlite:///app.db
+BACKEND_URL=http://localhost:8000
+AUTH_KEY=your-auth-key-here
 ```
-6. Run the application:
+
+4. Initialize the database:
+```bash
+flask db init
+flask db migrate
+flask db upgrade
 ```
+
+## Running the Application
+
+Start the development server:
+```bash
 flask run
 ```
-7. Open swagger UI:
+
+The API will be available at `http://localhost:5000`
+
+## API Documentation
+
+Swagger documentation is available at `http://localhost:5000/apidocs`
+
+## Testing
+
+Run the test suite:
+```bash
+pytest
 ```
-http://localhost:5000/apidocs/
+
+Run tests with coverage:
+```bash
+pytest --cov=app
 ```
 
 ## API Endpoints
 
 ### Authentication
-- POST /api/auth/register - Register a new user
-- POST /api/auth/login - Login and get JWT token
-- POST /api/auth/refresh - Refresh access token using refresh token
-- POST /api/auth/logout - Logout and revoke JWT token
-- POST /api/auth/verify - Verify if a token is valid and not expired
-- POST /api/auth/change-password - Change the user's password
-- GET /api/auth/profile - Get the authenticated user's profile
+- `POST /auth/register` - Register a new user
+- `POST /auth/login` - Login and get JWT token
 
-### Admin
-- GET /api/auth/users - Retrieve a list of all users (Admin-only)
-- DELETE /api/auth/user/{user_id} - Delete a user by ID (Admin-only)
+### Bugs
+- `GET /api/bugs` - Get all bugs
+- `GET /api/bugs/<bug_id>` - Get a specific bug
+- `POST /api/bugs` - Create a new bug
+- `POST /api/bugs/<bug_id>/mark_fixed` - Mark a bug as fixed
 
-### Accounts
-- GET /api/accounts - List all accounts for the authenticated user
-- POST /api/accounts - Create a new account
-- GET /api/accounts/{account_id} - Get details of a specific account
-- PUT /api/accounts/{account_id} - Update details of a specific account
-- DELETE /api/accounts/{account_id} - Delete a specific account
-- GET /api/accounts/{account_id}/transactions - Get transactions for a specific account
+## Environment Variables
 
-### Transactions
-- GET /api/transactions - Get transaction history for all user accounts
-- GET /api/transactions/accounts/{account_id}/transactions - Get transactions for a specific account
-- POST /api/transactions/accounts/{account_id}/transactions - Create a transaction for a specific account
-- POST /api/transactions/deposit - Deposit funds into an account
-- POST /api/transactions/withdraw - Withdraw funds from an account
-- POST /api/transactions/transfer - Transfer funds between accounts
-- POST /api/transactions/transfer-advanced - Advanced transfer between accounts
+- `FLASK_APP` - Main application file
+- `FLASK_DEBUG` - Debug mode (True/False)
+- `SECRET_KEY` - Flask secret key
+- `JWT_SECRET_KEY` - JWT signing key
+- `DATABASE_URL` - Database connection URL
+- `BACKEND_URL` - Backend service URL
+- `AUTH_KEY` - Backend authentication key
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
